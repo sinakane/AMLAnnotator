@@ -1,0 +1,48 @@
+{
+  "accuracy": 0.9887395115256247,
+  "report": {
+    "Erythroid_like_blasts": {
+      "precision": 0.9653323802716226,
+      "recall": 0.9975992613111727,
+      "f1-score": 0.9812006175642539,
+      "support": 5415.0
+    },
+    "GMP_like_blasts": {
+      "precision": 0.9890302764370338,
+      "recall": 0.9914229162084891,
+      "f1-score": 0.9902251510159253,
+      "support": 4547.0
+    },
+    "High_LSC_score_shared": {
+      "precision": 0.9915719325754606,
+      "recall": 0.9869293796332423,
+      "f1-score": 0.9892452092295659,
+      "support": 5126.0
+    },
+    "Mature_myeloid_like_blasts": {
+      "precision": 0.9851806112997838,
+      "recall": 0.9987480438184664,
+      "f1-score": 0.991917935965185,
+      "support": 3195.0
+    },
+    "Primitive_blasts": {
+      "precision": 0.9980831613093483,
+      "recall": 0.9827235772357723,
+      "f1-score": 0.990343818580834,
+      "support": 13776.0
+    },
+    "accuracy": 0.9887395115256247,
+    "macro avg": {
+      "precision": 0.9858396723786498,
+      "recall": 0.9914846356414285,
+      "f1-score": 0.9885865464711528,
+      "support": 32059.0
+    },
+    "weighted avg": {
+      "precision": 0.9889403573352953,
+      "recall": 0.9887395115256247,
+      "f1-score": 0.9887638509769157,
+      "support": 32059.0
+    }
+  }
+}

@@ -1,0 +1,5 @@
+title: AMLAnnotator
+description: Hierarchical annotation of malignant cells, blast groups, and LSC types in paediatric AML scRNA-seq data
+theme: jekyll-theme-cayman
+baseurl: "/AMLAnnotator"
+url: "https://sinakane.github.io"

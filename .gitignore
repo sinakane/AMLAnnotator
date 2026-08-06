@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+*.h5ad
+*.h5mu
+.ipynb_checkpoints/
+.DS_Store
+train_models.py
+models/
