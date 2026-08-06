@@ -166,7 +166,7 @@ class AMLAnnotator:
 
         return labels, confidence, class_probas
 
-    def annotate(self, adata, layer=None, copy=False):
+    def annotate(self, adata, layer=None, copy=False, malignant_prob_threshold=0.4):
         """
         Annotate an AnnData object with hierarchical AML classification.
 
@@ -180,6 +180,10 @@ class AMLAnnotator:
             Common choices: 'raw_counts', 'counts'.
         copy : bool, default False
             If True, return a copy of the AnnData object.
+        malignant_prob_threshold : float, default 0.4
+            Cells initially classified as normal but with an averaged
+            malignant probability above this threshold are reclassified
+            as malignant. Set to 0.5 to disable reclassification.
 
         Returns
         -------
@@ -207,6 +211,16 @@ class AMLAnnotator:
         print("  Level 1: Malignant vs Normal...")
         X_l1 = self._get_feature_matrix(adata, level=1, layer=layer)
         l1_labels, l1_conf, l1_probas = self._predict_level(X_l1, level=1)
+
+        # Reclassify low-confidence normals with high malignant probability
+        mal_probs = l1_probas["malignant"]
+        flip_mask = (l1_labels == "normal") & (mal_probs >= malignant_prob_threshold)
+        n_flipped = np.sum(flip_mask)
+        if n_flipped > 0:
+            l1_labels[flip_mask] = "malignant"
+            l1_conf[flip_mask] = mal_probs[flip_mask]
+            print(f"    Reclassified {n_flipped} low-confidence normals as malignant "
+                  f"(prob_malignant >= {malignant_prob_threshold})")
 
         adata.obs["aml_malignant_normal"] = l1_labels
         adata.obs["aml_malignant_confidence"] = l1_conf
