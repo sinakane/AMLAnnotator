@@ -166,7 +166,7 @@ class AMLAnnotator:
 
         return labels, confidence, class_probas
 
-    def annotate(self, adata, layer=None, copy=False, malignant_prob_threshold=0.4):
+    def annotate(self, adata, layer=None, copy=False, malignant_prob_threshold=0.3):
         """
         Annotate an AnnData object with hierarchical AML classification.
 
