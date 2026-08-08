@@ -3,12 +3,17 @@ Core annotator class for hierarchical AML cell classification.
 """
 
 import os
+import sys
+import tarfile
 import numpy as np
 import joblib
 from scipy.sparse import issparse
+from urllib.request import urlretrieve
 
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+
+MODELS_URL = "https://github.com/sinakane/AMLAnnotator/releases/download/v0.1.0/models_v0.1.0.tar.gz"
 
 LEVEL_NAMES = {
     1: "Malignant vs Normal",
@@ -17,6 +22,69 @@ LEVEL_NAMES = {
 }
 
 MODEL_TYPES = ["random_forest", "extra_trees", "logistic_regression"]
+
+EXPECTED_FILES = [
+    f"L{l}_{m}.joblib"
+    for l in [1, 2, 3]
+    for m in MODEL_TYPES
+] + [
+    f"L{l}_label_encoder.joblib" for l in [1, 2, 3]
+] + [
+    f"L{l}_genes.npy" for l in [1, 2, 3]
+]
+
+
+def _is_lfs_pointer(path):
+    """Check if a file is a Git LFS pointer instead of actual content."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(20)
+        return header.startswith(b"version https://git-lfs")
+    except Exception:
+        return False
+
+
+def _download_progress(block_num, block_size, total_size):
+    downloaded = block_num * block_size
+    if total_size > 0:
+        pct = min(100, downloaded * 100 // total_size)
+        mb = downloaded / (1024 * 1024)
+        total_mb = total_size / (1024 * 1024)
+        sys.stdout.write(f"\r  Downloading models: {mb:.0f}/{total_mb:.0f} MB ({pct}%)")
+        sys.stdout.flush()
+
+
+def _ensure_models():
+    """Download models from GitHub Releases if missing or corrupted (LFS pointers)."""
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    needs_download = False
+    for fname in EXPECTED_FILES:
+        fpath = os.path.join(MODEL_DIR, fname)
+        if not os.path.exists(fpath) or _is_lfs_pointer(fpath):
+            needs_download = True
+            break
+
+    if not needs_download:
+        return
+
+    print("AMLAnnotator: models not found or incomplete. Downloading from GitHub Releases...")
+    tarball = os.path.join(MODEL_DIR, "models_v0.1.0.tar.gz")
+    try:
+        urlretrieve(MODELS_URL, tarball, reporthook=_download_progress)
+        print()
+        print("  Extracting...", flush=True)
+        with tarfile.open(tarball, "r:gz") as tar:
+            tar.extractall(path=MODEL_DIR)
+        os.remove(tarball)
+        print("  Models ready.", flush=True)
+    except Exception as e:
+        if os.path.exists(tarball):
+            os.remove(tarball)
+        raise RuntimeError(
+            f"Failed to download models: {e}\n"
+            f"You can manually download from: {MODELS_URL}\n"
+            f"Extract into: {MODEL_DIR}"
+        ) from e
 
 
 class AMLAnnotator:
@@ -54,6 +122,7 @@ class AMLAnnotator:
 
     def _load_models(self):
         """Load all pre-trained models, label encoders, and gene lists."""
+        _ensure_models()
         for level in [1, 2, 3]:
             prefix = f"L{level}"
             self._models[level] = {}
