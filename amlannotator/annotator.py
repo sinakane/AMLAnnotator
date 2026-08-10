@@ -38,7 +38,7 @@ def _is_lfs_pointer(path):
     """Check if a file is a Git LFS pointer instead of actual content."""
     try:
         with open(path, "rb") as f:
-            header = f.read(20)
+            header = f.read(40)
         return header.startswith(b"version https://git-lfs")
     except Exception:
         return False
