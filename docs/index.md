@@ -54,6 +54,34 @@ print(adata.obs[["aml_malignant_normal", "aml_blast_group", "aml_lsc_type"]].val
 
 ---
 
+## Parameters
+
+The `annotate()` method accepts the following parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | `AnnData` | — | Input AnnData object with raw or normalised counts. Must contain standard gene symbols in `var_names`. |
+| `layer` | `str` or `None` | `None` | Layer containing raw counts. If `None`, uses `adata.X`. Common choices: `'raw_counts'`, `'counts'`. |
+| `copy` | `bool` | `False` | If `True`, return a copy of the AnnData object instead of modifying in place. |
+| `malignant_prob_threshold` | `float` | `0.3` | Cells initially classified as normal but with an averaged malignant probability above this threshold are reclassified as malignant. This catches borderline cells that sit near the decision boundary — for example, malignant cells that transcriptionally resemble healthy progenitors. Set to `0.5` to disable reclassification entirely. |
+
+### Adjusting the malignant probability threshold
+
+The default threshold of `0.3` was chosen to recover borderline malignant cells that the classifier assigns to normal with low confidence. In practice, these are cells with intermediate malignant probabilities (e.g. 0.30–0.49) that often correspond to leukaemic cells resembling healthy progenitors.
+
+```python
+# More aggressive reclassification — recovers more borderline cells
+adata = annotator.annotate(adata, layer="raw_counts", malignant_prob_threshold=0.2)
+
+# Conservative — only reclassify cells with high malignant probability
+adata = annotator.annotate(adata, layer="raw_counts", malignant_prob_threshold=0.4)
+
+# Disable reclassification entirely
+adata = annotator.annotate(adata, layer="raw_counts", malignant_prob_threshold=0.5)
+```
+
+---
+
 ## Output Columns
 
 After annotation, the following columns are added to `adata.obs`:
