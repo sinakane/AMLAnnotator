@@ -5,15 +5,24 @@ title: AMLAnnotator
 
 # AMLAnnotator
 
-**Hierarchical annotation of malignant cells, blast groups, and LSC types in paediatric AML single-cell RNA-seq data.**
+**Hierarchical annotation of malignant cells, blast groups, and LSC types in paediatric AML (and, for malignant/normal calling, B-ALL) single-cell RNA-seq data.**
 
-AMLAnnotator is a Python tool that provides automated, three-level hierarchical classification of cells in acute myeloid leukaemia (AML) scRNA-seq datasets. It takes an AnnData object as input and returns cell-level annotations with confidence scores at each level of the hierarchy.
+AMLAnnotator is a Python tool that provides automated classification of cells in AML/B-ALL scRNA-seq datasets using an ensemble of pre-trained classifiers. It takes an AnnData object as input and returns cell-level annotations with confidence scores. Two separate model bundles are available, selected via `AMLAnnotator(model="...")`:
+
+| `model=` | Diseases | Levels available | Notes |
+|----------|----------|-------------------|-------|
+| `"full"` (default) | AML | L1 malignant/normal → L2 blast group → L3 LSC type | The original three-level hierarchy. |
+| `"pan_leukemia"` | AML + B-ALL | L1 malignant/normal only | Blast group and LSC type for this track are planned for a future release. |
+
+Call `AMLAnnotator.list_models()` at any time to see this list without downloading anything.
 
 ---
 
 ## Overview
 
-AMLAnnotator performs three sequential classification steps:
+### `model="full"`
+
+Three sequential classification steps, trained on a paediatric AML cohort:
 
 | Level | Task | Classes |
 |-------|------|---------|
@@ -21,7 +30,19 @@ AMLAnnotator performs three sequential classification steps:
 | **2** | Blast Group | `Primitive_blasts`, `GMP_like_blasts`, `Erythroid_like_blasts`, `Mature_myeloid_like_blasts`, `High_LSC_score_shared` |
 | **3** | LSC Type | `P-LSC`, `M-LSC`, `E-LSC`, `Patient Specific` |
 
-Each level uses an **ensemble of three classifiers** (Random Forest, Extra Trees, Logistic Regression) with majority voting and averaged probability scores. Only cells classified as malignant at Level 1 proceed to Level 2, and only cells classified as `High_LSC_score_shared` at Level 2 proceed to Level 3.
+Only cells classified as malignant at Level 1 proceed to Level 2, and only cells classified as `High_LSC_score_shared` at Level 2 proceed to Level 3.
+
+### `model="pan_leukemia"`
+
+A single classification step, trained across a much larger, multi-study cohort spanning both AML and B-ALL:
+
+| Level | Task | Classes |
+|-------|------|---------|
+| **1** | Malignant vs Normal | `malignant`, `normal` |
+
+Blast group and LSC type are not available for this model yet.
+
+Each available level, in either bundle, uses an **ensemble of three classifiers** (Random Forest, Extra Trees, Logistic Regression) with majority voting and averaged probability scores.
 
 ---
 
@@ -39,18 +60,23 @@ pip install git+https://github.com/sinakane/AMLAnnotator.git
 import scanpy as sc
 from amlannotator import AMLAnnotator
 
-# Load your AML scRNA-seq data
-adata = sc.read_h5ad("my_aml_data.h5ad")
+# See what's available before picking one (no download needed for this call)
+AMLAnnotator.list_models()
 
-# Initialize the annotator (models load automatically)
-annotator = AMLAnnotator()
+adata = sc.read_h5ad("my_data.h5ad")
 
-# Annotate — specify the layer with raw counts if needed
+# Full AML hierarchy (malignant/normal -> blast group -> LSC type)
+annotator = AMLAnnotator(model="full")
 adata = annotator.annotate(adata, layer="raw_counts")
+print(adata.obs[["aml_malignant_normal", "aml_blast_group", "aml_lsc_type"]])
 
-# View results
-print(adata.obs[["aml_malignant_normal", "aml_blast_group", "aml_lsc_type"]].value_counts())
+# Malignant/normal only, works on AML or B-ALL data
+annotator = AMLAnnotator(model="pan_leukemia")
+adata = annotator.annotate(adata, layer="raw_counts")
+print(adata.obs[["aml_malignant_normal"]])
 ```
+
+Model files for the bundle you request are **downloaded automatically** the first time you instantiate `AMLAnnotator(model=...)` — see [Model hosting](#model-hosting) below.
 
 ---
 
@@ -63,7 +89,9 @@ The `annotate()` method accepts the following parameters:
 | `adata` | `AnnData` | — | Input AnnData object with raw or normalised counts. Must contain standard gene symbols in `var_names`. |
 | `layer` | `str` or `None` | `None` | Layer containing raw counts. If `None`, uses `adata.X`. Common choices: `'raw_counts'`, `'counts'`. |
 | `copy` | `bool` | `False` | If `True`, return a copy of the AnnData object instead of modifying in place. |
-| `malignant_prob_threshold` | `float` | `0.3` | Cells initially classified as normal but with an averaged malignant probability above this threshold are reclassified as malignant. This catches borderline cells that sit near the decision boundary — for example, malignant cells that transcriptionally resemble healthy progenitors. Set to `0.5` to disable reclassification entirely. |
+| `malignant_prob_threshold` | `float` | `0.3` | Cells initially classified as normal but with an averaged malignant probability above this threshold are reclassified as malignant. This catches borderline cells that sit near the decision boundary — for example, malignant cells that transcriptionally resemble healthy progenitors. Set to `0.5` to disable reclassification entirely. Applies to Level 1 of both model bundles. |
+
+For `model="pan_leukemia"`, `annotate()` runs Level 1 only and prints a note that Level 2/3 are skipped, rather than raising an error.
 
 ### Adjusting the malignant probability threshold
 
@@ -84,22 +112,22 @@ adata = annotator.annotate(adata, layer="raw_counts", malignant_prob_threshold=0
 
 ## Output Columns
 
-After annotation, the following columns are added to `adata.obs`:
+Which columns are populated depends on which levels the selected `model=` supports.
 
 ### Annotations
-- `aml_malignant_normal` — `'malignant'` or `'normal'`
-- `aml_blast_group` — blast group label (malignant cells only; `'N/A'` for normal)
-- `aml_lsc_type` — LSC type label (High_LSC_score_shared cells only; `'N/A'` otherwise)
+- `aml_malignant_normal` — `'malignant'` or `'normal'` (both bundles)
+- `aml_blast_group` — blast group label (malignant cells only; `'N/A'` for normal) — `full` only
+- `aml_lsc_type` — LSC type label (High_LSC_score_shared cells only; `'N/A'` otherwise) — `full` only
 
 ### Confidence Scores
-- `aml_malignant_confidence` — ensemble confidence for Level 1 (0–1)
-- `aml_blast_confidence` — ensemble confidence for Level 2 (0–1)
-- `aml_lsc_confidence` — ensemble confidence for Level 3 (0–1)
+- `aml_malignant_confidence` — ensemble confidence for Level 1 (0–1) (both bundles)
+- `aml_blast_confidence` — ensemble confidence for Level 2 (0–1) — `full` only
+- `aml_lsc_confidence` — ensemble confidence for Level 3 (0–1) — `full` only
 
 ### Per-class Probabilities
-- `aml_prob_malignant`, `aml_prob_normal`
-- `aml_prob_Primitive_blasts`, `aml_prob_GMP_like_blasts`, etc.
-- `aml_prob_P-LSC`, `aml_prob_M-LSC`, `aml_prob_E-LSC`, `aml_prob_Patient Specific`
+- `aml_prob_malignant`, `aml_prob_normal` (both bundles)
+- `aml_prob_Primitive_blasts`, `aml_prob_GMP_like_blasts`, etc. — `full` only
+- `aml_prob_P-LSC`, `aml_prob_M-LSC`, `aml_prob_E-LSC`, `aml_prob_Patient Specific` — `full` only
 
 ---
 
@@ -109,8 +137,9 @@ After annotation, the following columns are added to `adata.obs`:
 The tool normalises your expression matrix internally: raw counts are total-count normalised to 10,000 per cell and log1p-transformed. No prior normalisation is required — provide raw counts.
 
 ### Feature Selection
-- **Levels 1 & 2**: The top 500 genes were selected by **mutual information** between gene expression and the target labels from 3,000 highly variable genes.
-- **Level 3**: The top 80 differentially expressed genes per class were selected using the **Wilcoxon rank-sum test** via `scanpy.tl.rank_genes_groups`, yielding 308 unique genes.
+- **`full`, Levels 1 & 2**: The top 500 genes were selected by **mutual information** between gene expression and the target labels from 3,000 highly variable genes.
+- **`full`, Level 3**: The top 80 differentially expressed genes per class were selected using the **Wilcoxon rank-sum test** via `scanpy.tl.rank_genes_groups`, yielding 308 unique genes.
+- **`pan_leukemia`, Level 1**: The top 500 genes were selected by **mutual information** on precomputed highly variable genes from the source object.
 
 Only these selected genes are used at prediction time.
 
@@ -123,7 +152,7 @@ Each level uses three classifiers trained on the selected features:
 
 The final prediction is determined by **majority vote** across the three classifiers. The confidence score is the **maximum of the averaged probability vector** across models.
 
-### Hierarchical Flow
+### Hierarchical Flow (`model="full"`)
 
 ```
 All cells
@@ -150,9 +179,13 @@ All cells
   │           │                 └─ Patient Specific
 ```
 
+`model="pan_leukemia"` currently stops after Level 1.
+
 ---
 
 ## Training Data
+
+### `model="full"`
 
 Models were trained on a paediatric AML cohort:
 
@@ -160,7 +193,19 @@ Models were trained on a paediatric AML cohort:
 - **Level 2**: 160,295 malignant cells × 3,000 HVGs → 500 MI-selected features — **98.9% accuracy**
 - **Level 3**: 19,659 High_LSC_score_shared cells × 36,601 genes → 308 DE genes — **96.6% accuracy**
 
+### `model="pan_leukemia"`
+
+- **Level 1**: 1,744,555 cells across a multi-study AML + B-ALL cohort → 500 MI-selected features — **95.6% accuracy**
+
+`pan_leukemia`'s Level 1 is trained on a much larger, more heterogeneous cohort than `full`'s AML-only Level 1 — the lower accuracy reflects the harder, cross-disease task, not a worse model for either disease individually.
+
 All metrics are from a held-out 20% test set (stratified split).
+
+---
+
+## Model hosting
+
+Model files are too large for GitHub (the largest single file exceeds GitHub's 2GB release-asset limit) and are hosted on the [Hugging Face Hub](https://huggingface.co/AgSin/AMLAnnotator-models) instead, one subfolder per `model=` bundle (`full/`, `pan_leukemia/`). Only the files for the bundle you actually request are downloaded automatically the first time you instantiate `AMLAnnotator(model=...)` — no manual steps needed, just an internet connection on first use per bundle (cached locally afterwards).
 
 ---
 
@@ -173,6 +218,7 @@ All metrics are from a held-out 20% test set (stratified split).
 - scanpy ≥ 1.9
 - scipy ≥ 1.7
 - joblib ≥ 1.1
+- huggingface_hub ≥ 0.20 (for automatic model download)
 
 ---
 
@@ -180,7 +226,7 @@ All metrics are from a held-out 20% test set (stratified split).
 
 If you use AMLAnnotator in your research, please cite:
 
-> Kanannejad, S. et al. (2026). AMLAnnotator: Hierarchical annotation of malignant cells in paediatric AML single-cell data. GitHub. https://github.com/sinakane/AMLAnnotator
+> Kanannejad, S. et al. (2026). AMLAnnotator: Hierarchical annotation of malignant cells in paediatric AML and B-ALL single-cell data. GitHub. https://github.com/sinakane/AMLAnnotator
 
 ---
 
