@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "amlannotator"
-version = "0.1.0"
-description = "Hierarchical annotation of malignant cells, blast groups, and LSC types in paediatric AML single-cell RNA-seq data"
+version = "0.2.0"
+description = "Hierarchical annotation of malignant cells, blast groups, and LSC types in paediatric AML and B-ALL single-cell RNA-seq data"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
@@ -19,6 +19,7 @@ dependencies = [
     "scanpy>=1.9",
     "scipy>=1.7",
     "joblib>=1.1",
+    "huggingface_hub>=0.20",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

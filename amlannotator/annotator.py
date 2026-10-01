@@ -1,19 +1,23 @@
 """
-Core annotator class for hierarchical AML cell classification.
+Core annotator class for hierarchical AML / B-ALL cell classification.
 """
 
 import os
-import sys
-import tarfile
+import shutil
 import numpy as np
 import joblib
 from scipy.sparse import issparse
-from urllib.request import urlretrieve
 
 
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+PACKAGE_MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 
-MODELS_URL = "https://github.com/sinakane/AMLAnnotator/releases/download/v0.1.0/models_v0.1.0.tar.gz"
+# Models are hosted on the Hugging Face Hub rather than GitHub Releases: the
+# retrained "full" L1 and "pan_leukemia" L1 models both exceed GitHub's 2GB-
+# per-release-asset limit (the largest single file is ~3GB), and would also
+# exceed Git LFS's free bandwidth quota on a single clone. HF Hub has no such
+# per-file cap. Each model bundle lives under its own prefix in the repo
+# (e.g. "full/L1_random_forest.joblib", "pan_leukemia/L1_random_forest.joblib").
+HF_REPO_ID = "AgSin/AMLAnnotator-models"
 
 LEVEL_NAMES = {
     1: "Malignant vs Normal",
@@ -23,15 +27,49 @@ LEVEL_NAMES = {
 
 MODEL_TYPES = ["random_forest", "extra_trees", "logistic_regression"]
 
-EXPECTED_FILES = [
-    f"L{l}_{m}.joblib"
-    for l in [1, 2, 3]
-    for m in MODEL_TYPES
-] + [
-    f"L{l}_label_encoder.joblib" for l in [1, 2, 3]
-] + [
-    f"L{l}_genes.npy" for l in [1, 2, 3]
-]
+# ──────────────────────────────────────────────────────────────────────────
+# Model registry: each entry is a distinct, independently-downloadable model
+# bundle, selected via AMLAnnotator(model="<key>"). See AMLAnnotator.list_models().
+#
+#   "full"         -- the original three-level hierarchy (malignant/normal ->
+#                      blast group -> LSC type), trained on AML only.
+#   "pan_leukemia" -- malignant/normal only (Level 1) so far, trained across
+#                      AML and B-ALL. Blast group and LSC type for this model
+#                      are planned for a future release -- once trained, add
+#                      their level numbers to "levels" below and upload the
+#                      corresponding files under the same "pan_leukemia/"
+#                      prefix on the Hub; no other code changes needed.
+# ──────────────────────────────────────────────────────────────────────────
+MODEL_REGISTRY = {
+    "full": {
+        "display_name": "AMLAnnotator Full",
+        "description": "Three-level hierarchy: malignant/normal -> blast group -> LSC type.",
+        "diseases": ["AML"],
+        "levels": [1, 2, 3],
+        "hf_prefix": "full",
+    },
+    "pan_leukemia": {
+        "display_name": "AMLAnnotator Pan-Leukemia",
+        "description": (
+            "Malignant vs normal only (Level 1), trained across AML and B-ALL. "
+            "Blast group and LSC type are not yet available for this model "
+            "(planned for a future release)."
+        ),
+        "diseases": ["AML", "B-ALL"],
+        "levels": [1],
+        "hf_prefix": "pan_leukemia",
+    },
+}
+DEFAULT_MODEL = "full"
+
+
+def _expected_files(levels):
+    return (
+        [f"L{l}_{m}.joblib" for l in levels for m in MODEL_TYPES]
+        + [f"L{l}_label_encoder.joblib" for l in levels]
+        + [f"L{l}_genes.npy" for l in levels]
+        + [f"L{l}_metrics.json" for l in levels]
+    )
 
 
 def _is_lfs_pointer(path):
@@ -44,90 +82,122 @@ def _is_lfs_pointer(path):
         return False
 
 
-def _download_progress(block_num, block_size, total_size):
-    downloaded = block_num * block_size
-    if total_size > 0:
-        pct = min(100, downloaded * 100 // total_size)
-        mb = downloaded / (1024 * 1024)
-        total_mb = total_size / (1024 * 1024)
-        sys.stdout.write(f"\r  Downloading models: {mb:.0f}/{total_mb:.0f} MB ({pct}%)")
-        sys.stdout.flush()
+def _ensure_models(model_key):
+    """Download one model bundle's files from the Hugging Face Hub if missing/corrupted."""
+    if model_key not in MODEL_REGISTRY:
+        raise ValueError(
+            f"Unknown model '{model_key}'. Available: {list(MODEL_REGISTRY)}. "
+            f"See AMLAnnotator.list_models() for details."
+        )
+    spec = MODEL_REGISTRY[model_key]
+    model_dir = os.path.join(PACKAGE_MODEL_DIR, model_key)
+    os.makedirs(model_dir, exist_ok=True)
 
-
-def _ensure_models():
-    """Download models from GitHub Releases if missing or corrupted (LFS pointers)."""
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    needs_download = False
-    for fname in EXPECTED_FILES:
-        fpath = os.path.join(MODEL_DIR, fname)
-        if not os.path.exists(fpath) or _is_lfs_pointer(fpath):
-            needs_download = True
-            break
-
-    if not needs_download:
+    expected = _expected_files(spec["levels"])
+    missing = [
+        fname for fname in expected
+        if not os.path.exists(os.path.join(model_dir, fname)) or _is_lfs_pointer(os.path.join(model_dir, fname))
+    ]
+    if not missing:
         return
 
-    print("AMLAnnotator: models not found or incomplete. Downloading from GitHub Releases...")
-    tarball = os.path.join(MODEL_DIR, "models_v0.1.0.tar.gz")
     try:
-        urlretrieve(MODELS_URL, tarball, reporthook=_download_progress)
-        print()
-        print("  Extracting...", flush=True)
-        with tarfile.open(tarball, "r:gz") as tar:
-            tar.extractall(path=MODEL_DIR)
-        os.remove(tarball)
+        from huggingface_hub import hf_hub_download
+    except ImportError as e:
+        raise RuntimeError(
+            "Model files are missing and downloading them requires the 'huggingface_hub' "
+            "package: pip install huggingface_hub"
+        ) from e
+
+    print(f"AMLAnnotator: downloading {len(missing)} file(s) for model='{model_key}' "
+          f"from https://huggingface.co/{HF_REPO_ID} ({spec['hf_prefix']}/) ...", flush=True)
+    try:
+        for fname in missing:
+            print(f"  {fname} ...", flush=True)
+            cached_path = hf_hub_download(
+                repo_id=HF_REPO_ID, filename=f"{spec['hf_prefix']}/{fname}"
+            )
+            shutil.copyfile(cached_path, os.path.join(model_dir, fname))
         print("  Models ready.", flush=True)
     except Exception as e:
-        if os.path.exists(tarball):
-            os.remove(tarball)
         raise RuntimeError(
-            f"Failed to download models: {e}\n"
-            f"You can manually download from: {MODELS_URL}\n"
-            f"Extract into: {MODEL_DIR}"
+            f"Failed to download models from Hugging Face Hub: {e}\n"
+            f"You can browse/download manually from: "
+            f"https://huggingface.co/{HF_REPO_ID}/tree/main/{spec['hf_prefix']}\n"
+            f"Place the files directly into: {model_dir}"
         ) from e
 
 
 class AMLAnnotator:
     """
-    Hierarchical annotator for AML single-cell RNA-seq data.
+    Hierarchical annotator for AML / B-ALL single-cell RNA-seq data.
 
-    Provides three-level classification:
-      - Level 1: Malignant vs Normal
-      - Level 2: Blast group among malignant cells
-      - Level 3: LSC type among High_LSC_score_shared cells
+    Two model bundles are available -- call AMLAnnotator.list_models() for
+    the full, up-to-date list and what each one covers:
 
-    Each level uses an ensemble of three classifiers (Random Forest,
-    Extra Trees, Logistic Regression) with majority voting and
+      - "full" (default): three-level AML-only hierarchy (malignant/normal
+        -> blast group -> LSC type).
+      - "pan_leukemia": malignant/normal only (Level 1 -- calling
+        .annotate() will only populate the malignant/normal columns),
+        trained across both AML and B-ALL.
+
+    Each available level uses an ensemble of three classifiers (Random
+    Forest, Extra Trees, Logistic Regression) with majority voting and
     averaged probability scores.
 
     Parameters
     ----------
-    None. Models are loaded automatically from the bundled model files.
+    model : str, default "full"
+        Which model bundle to load. See AMLAnnotator.list_models().
 
     Examples
     --------
     >>> import scanpy as sc
     >>> from amlannotator import AMLAnnotator
-    >>> adata = sc.read_h5ad("my_aml_data.h5ad")
-    >>> annotator = AMLAnnotator()
+    >>> AMLAnnotator.list_models()
+    >>> adata = sc.read_h5ad("my_data.h5ad")
+    >>> annotator = AMLAnnotator(model="full")
     >>> adata = annotator.annotate(adata)
     >>> adata.obs[["aml_malignant_normal", "aml_blast_group", "aml_lsc_type"]]
     """
 
-    def __init__(self):
+    def __init__(self, model=DEFAULT_MODEL):
+        if model not in MODEL_REGISTRY:
+            raise ValueError(
+                f"Unknown model '{model}'. Available: {list(MODEL_REGISTRY)}. "
+                f"See AMLAnnotator.list_models() for details."
+            )
+        self.model_key = model
+        self.levels = MODEL_REGISTRY[model]["levels"]
         self._models = {}
         self._label_encoders = {}
         self._genes = {}
         self._load_models()
 
+    @staticmethod
+    def list_models():
+        """Print the available model bundles, what diseases/levels each covers, and how to pick one."""
+        print(f"{'model=':<20}{'diseases':<14}{'levels available'}")
+        print("-" * 90)
+        for key, spec in MODEL_REGISTRY.items():
+            marker = '"%s" (default)' % key if key == DEFAULT_MODEL else '"%s"' % key
+            levels_str = ", ".join(f"L{l} ({LEVEL_NAMES[l]})" for l in spec["levels"])
+            print(f"{marker:<20}{'/'.join(spec['diseases']):<14}{levels_str}")
+            print(f"    {spec['description']}\n")
+        print('Usage: AMLAnnotator(model="<key>")')
+
+    def _model_dir(self):
+        return os.path.join(PACKAGE_MODEL_DIR, self.model_key)
+
     def _load_models(self):
-        """Load all pre-trained models, label encoders, and gene lists."""
-        _ensure_models()
-        for level in [1, 2, 3]:
+        """Load pre-trained models, label encoders, and gene lists for this instance's model bundle."""
+        _ensure_models(self.model_key)
+        model_dir = self._model_dir()
+        for level in self.levels:
             prefix = f"L{level}"
             self._models[level] = {}
             for mtype in MODEL_TYPES:
-                path = os.path.join(MODEL_DIR, f"{prefix}_{mtype}.joblib")
+                path = os.path.join(model_dir, f"{prefix}_{mtype}.joblib")
                 if not os.path.exists(path):
                     raise FileNotFoundError(
                         f"Model file not found: {path}. "
@@ -135,10 +205,10 @@ class AMLAnnotator:
                     )
                 self._models[level][mtype] = joblib.load(path)
 
-            le_path = os.path.join(MODEL_DIR, f"{prefix}_label_encoder.joblib")
+            le_path = os.path.join(model_dir, f"{prefix}_label_encoder.joblib")
             self._label_encoders[level] = joblib.load(le_path)
 
-            genes_path = os.path.join(MODEL_DIR, f"{prefix}_genes.npy")
+            genes_path = os.path.join(model_dir, f"{prefix}_genes.npy")
             self._genes[level] = np.load(genes_path, allow_pickle=True)
 
     @staticmethod
@@ -237,7 +307,12 @@ class AMLAnnotator:
 
     def annotate(self, adata, layer=None, copy=False, malignant_prob_threshold=0.3):
         """
-        Annotate an AnnData object with hierarchical AML classification.
+        Annotate an AnnData object with hierarchical AML/B-ALL classification.
+
+        Which columns get populated depends on the model bundle this
+        instance was constructed with (see AMLAnnotator.list_models()) --
+        a model that only supports Level 1 will only populate the
+        malignant/normal columns.
 
         Parameters
         ----------
@@ -249,7 +324,7 @@ class AMLAnnotator:
             Common choices: 'raw_counts', 'counts'.
         copy : bool, default False
             If True, return a copy of the AnnData object.
-        malignant_prob_threshold : float, default 0.4
+        malignant_prob_threshold : float, default 0.3
             Cells initially classified as normal but with an averaged
             malignant probability above this threshold are reclassified
             as malignant. Set to 0.5 to disable reclassification.
@@ -260,21 +335,23 @@ class AMLAnnotator:
             Annotated AnnData with new columns in obs:
             - ``aml_malignant_normal``: 'malignant' or 'normal'
             - ``aml_malignant_confidence``: ensemble confidence [0-1]
-            - ``aml_blast_group``: blast group (malignant cells only)
+            - ``aml_blast_group``: blast group (malignant cells only; only
+              if this model's levels include Level 2)
             - ``aml_blast_confidence``: ensemble confidence [0-1]
-            - ``aml_lsc_type``: LSC type (High_LSC_score_shared cells only)
+            - ``aml_lsc_type``: LSC type (High_LSC_score_shared cells only;
+              only if this model's levels include Level 3)
             - ``aml_lsc_confidence``: ensemble confidence [0-1]
 
             Per-class probability columns are also added:
             - ``aml_prob_malignant``, ``aml_prob_normal``
-            - ``aml_prob_<blast_group>`` for each blast group
-            - ``aml_prob_<lsc_type>`` for each LSC type
+            - ``aml_prob_<blast_group>`` for each blast group, if available
+            - ``aml_prob_<lsc_type>`` for each LSC type, if available
         """
         if copy:
             adata = adata.copy()
 
         n_cells = adata.n_obs
-        print(f"AMLAnnotator: annotating {n_cells} cells...")
+        print(f"AMLAnnotator (model='{self.model_key}'): annotating {n_cells} cells...")
 
         # --- Level 1: Malignant vs Normal ---
         print("  Level 1: Malignant vs Normal...")
@@ -299,6 +376,14 @@ class AMLAnnotator:
         n_mal = np.sum(l1_labels == "malignant")
         n_norm = np.sum(l1_labels == "normal")
         print(f"    {n_mal} malignant, {n_norm} normal")
+
+        if 2 not in self.levels:
+            available = ", ".join(LEVEL_NAMES[l] for l in self.levels)
+            print(f"  Level 2 & 3: not available for model='{self.model_key}' "
+                  f"(this model only supports: {available}). "
+                  f"Use model=\"full\" for blast group / LSC type classification.")
+            print("  Done.")
+            return adata
 
         # --- Level 2: Blast Group (malignant cells only) ---
         adata.obs["aml_blast_group"] = "N/A"
@@ -360,18 +445,19 @@ class AMLAnnotator:
         return adata
 
     def get_model_info(self):
-        """Return a summary of the models and their training metrics."""
+        """Return a summary of the loaded model bundle's levels and their training metrics."""
         import json
-        info = {}
-        for level in [1, 2, 3]:
-            metrics_path = os.path.join(MODEL_DIR, f"L{level}_metrics.json")
+        info = {"model": self.model_key, "levels": {}}
+        model_dir = self._model_dir()
+        for level in self.levels:
+            metrics_path = os.path.join(model_dir, f"L{level}_metrics.json")
             if os.path.exists(metrics_path):
                 with open(metrics_path) as f:
                     metrics = json.load(f)
             else:
                 metrics = {"accuracy": "N/A"}
 
-            info[f"Level {level}: {LEVEL_NAMES[level]}"] = {
+            info["levels"][f"Level {level}: {LEVEL_NAMES[level]}"] = {
                 "classes": list(self._label_encoders[level].classes_),
                 "n_features": len(self._genes[level]),
                 "models": MODEL_TYPES,
